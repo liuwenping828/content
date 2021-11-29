@@ -278,10 +278,3 @@ LruCache 是 Android 提供的一种基于内存的缓存框架。LRU 是 **Leas
 以上是我们对 LruCache 的是使用和源码的总结，这里我们实际上只分析了 `get()` 的过程。因为这个方法才是 LruCache 的核心，它包含了插入值和移动最近使用的项目的过程。至于 `put()` 和 `remove()` 两种方法，它们内部实际上直接调用了 LinkedHashMap 的方法。这里我们不再对它们进行分析。
 
 ------
-**如果您喜欢我的文章，可以在以下平台关注我：**
-
-- 个人主页：[https://shouheng88.github.io/](https://shouheng88.github.io/)
-- 掘金：[https://juejin.im/user/585555e11b69e6006c907a2a](https://juejin.im/user/585555e11b69e6006c907a2a)
-- Github：[https://github.com/Shouheng88](https://github.com/Shouheng88)
-- CSDN：[https://blog.csdn.net/github_35186068](https://blog.csdn.net/github_35186068)
-- 微博：[https://weibo.com/u/5401152113](https://weibo.com/u/5401152113)
