@@ -1,0 +1,277 @@
+1. 关于dagger 依赖注入多个对象实例(Activity,Fragment等)，造成内存消耗过大，
+可以采用按页面需要进行注入，没有使用到的页面不进行依赖注入，减少内存消耗及
+注入多个对象应用启动耗时
+
+1.1  创建ApplicationModule 模块
+@Module
+class ApplicationModule(private val application: BaseApplication) {
+
+    // 全局上下文
+    @Provides
+    @Singleton
+    fun provideApplication(): BaseApplication {
+        return application
+    }
+
+    @Provides
+    @Singleton
+    fun provideRetrofit(): Retrofit {
+        return Retrofit.Builder()
+            .addConverterFactory(GsonConverterFactory.create(Gson()))
+            .addCallAdapterFactory(RxJava2CallAdapterFactory.create())
+            .baseUrl("https://api.doordash.com/v2/")
+            .build()
+    }
+}
+
+1.2 创建 ApplicationComponent 组件, 将ApplicationModule, ApiModule, RepositoryModule 装载进组件中，
+同时提供注入Applicaton 对象的函数,和 添加 ScreenComponent 组件的函数
+@Singleton
+@Component(modules = [ApplicationModule::class, ApiModule::class, RepositoryModule::class])
+interface ApplicationComponent {
+
+    fun inject(activity: BaseApplication)
+
+    fun plus(screenModule: ScreenModule): ScreenComponent
+
+}
+
+@Module
+class ApiModule {
+
+    // ApiService 是服务端提供的接口
+    @Provides
+    @Singleton
+    fun provideApiService(retrofit: Retrofit): ApiService {
+        return retrofit
+            .create(ApiService::class.java)
+    }
+
+}
+
+interface ApiService {
+
+    @GET("restaurant/")
+    fun getRestaurantList(
+        @Query("lat") lat: Double,
+        @Query("lng") lng: Double,
+        @Query("offset") offset: Int,
+        @Query("limit") limit: Int
+    ): Single<List<RestaurantResponse>>
+
+    @GET("restaurant/{id}")
+    fun getRestaurant(@Path("id") id: Int): Single<RestaurantResponse>
+
+}
+
+class Api @Inject constructor(private val apiService: ApiService) {
+
+    fun getRestaurantList(lat: Double, lng: Double, offset: Int, limit: Int): Single<List<RestaurantResponse>> {
+        return apiService.getRestaurantList(lat, lng, offset, limit)
+    }
+
+    fun getRestaurant(id: Int): Single<RestaurantResponse> {
+        return apiService.getRestaurant(id)
+    }
+
+}
+
+@Module
+class RepositoryModule {
+
+    // Repository 是接口文件，跟 ApiService 中接口函数一样，只不过函数没有Rx注解
+    // RepositoryImpl 是 Repository 实现类
+    @Provides
+    @Singleton
+    fun provideRepository(
+        Api: api,
+        mapper: ResponseMapper
+    ): Repository {
+        return RepositoryImpl(api, mapper)
+    }
+}
+
+/**
+ * 将 Response 对象转换为 model 对象
+ */
+class ResponseMapper @Inject constructor() {
+
+    fun map(responseList: List<RestaurantResponse>): List<Restaurant> {
+        return responseList.map { (map(it)) }
+    }
+
+    fun map(response: RestaurantResponse): Restaurant {
+        return Restaurant(
+            id = response.id,
+            name = response.name,
+            description = response.description,
+            coverImgUrl = response.coverImgUrl,
+            status = response.status,
+            deliveryFee = response.deliveryFee
+        )
+    }
+
+}
+
+
+interface Repository {
+
+    fun getRestaurantList(lat: Double, lng: Double, offset: Int, limit: Int): Single<List<Restaurant>>
+
+    fun getRestaurant(id: Int): Single<Restaurant>
+}
+
+
+/**
+ * RepositoryImpl 实现 Repository 接口
+ * RestaurantRepository 负责从Api层 获取对应接口数据
+ */
+class RepositoryImpl constructor(
+    private val api : Api,
+    private val mapper: ResponseMapper
+) : Repository {
+
+    override fun getRestaurantList(lat: Double, lng: Double, offset: Int, limit: Int): Single<List<Restaurant>> {
+        return restaurantApi.getRestaurantList(lat, lng, offset, limit)
+            .map {
+                restaurantMapper.map(it)
+            }
+    }
+
+    override fun getRestaurant(id: Int): Single<Restaurant> {
+        return restaurantApi.getRestaurant(id)
+            .map {
+                restaurantMapper.map(it)
+            }
+    }
+}
+
+1.3 创建 ScreenModule 模块
+@Module
+class ScreenModule(private val activity: BaseActivity) {
+
+    @PerScreen
+    @Provides
+    fun providesActivity(): BaseActivity {
+        return activity
+    }
+
+    @PerScreen
+    @Provides
+    fun providesMainRouter(): MainRouter {
+        return MainRouter(WeakReference(activity))
+    }
+
+    @PerScreen
+    @Provides
+    fun providesRestaurantDetailRouter(): RestaurantDetailRouter {
+        return RestaurantDetailRouter(WeakReference(activity))
+    }
+
+}
+
+// 注解
+@Scope
+@Retention(RUNTIME)
+annotation class PerScreen
+
+
+/**
+ * MainActivity 中路由导航
+ */
+class MainRouter(private val activityRef: WeakReference<Activity>) {
+
+    enum class Route {
+        IMAGE_DETAIL,
+        RESTAURANT_DETAIL
+    }
+
+    fun navigate(route: Route, bundle: Bundle = Bundle()) {
+        when (route) {
+            Route.IMAGE_DETAIL -> {
+                showNextScreen(ImageDetailActivity::class.java, bundle)
+            }
+            Route.RESTAURANT_DETAIL -> {
+                showNextScreen(RestaurantDetailActivity::class.java, bundle)
+            }
+        }
+    }
+
+    private fun showNextScreen(clazz: Class<*>, bundle: Bundle) {
+        activityRef.get()?.startActivity(Intent(activityRef.get(), clazz).putExtras(bundle))
+    }
+}
+
+1.4 创建 ScreenComponent 组件 将 ScreenModule 模块装载
+@PerScreen
+@Subcomponent(modules = [ScreenModule::class])
+interface ScreenComponent {
+
+    fun inject(mainActivity: MainActivity)
+
+    fun inject(restaurantDetailActivity: RestaurantDetailActivity)
+
+    fun inject(imageDetailActivity: ImageDetailActivity)
+
+}
+
+1.5 创建 BaseActivity，将 ScreenModule 模块实例化  
+open class BaseActivity : AppCompatActivity() {
+
+    val screenComponent by lazy {
+        getApplicationComponent().plus(ScreenModule(this))
+    }
+
+    private fun getApplicationComponent(): ApplicationComponent {
+        return (application as BaseApplication).component
+    }
+}
+
+1.6 BaseApplication 实例化
+class BaseApplication : Application() {
+
+    lateinit var component: ApplicationComponent
+
+    override fun onCreate() {
+        super.onCreate()
+
+        inject()
+    }
+
+    private fun inject() {
+        component = DaggerApplicationComponent
+            .builder()
+            .applicationModule(ApplicationModule(this))
+            .build()
+        // 注入上下文
+        component.inject(this)
+	// 所有的 module 都实例化了
+	// 当某个Activity  需要依赖注入，即可在该 Activity 的 onCreate 方法中
+	调用 screenComponent.inject(this)，并且该 Activity 在 ScreenComponent 有声明注入方法
+
+    }
+}
+
+
+class GetListUseCase @Inject constructor(private val repository: Repository) {
+
+    sealed class Result {
+        object Loading : Result()
+        data class Success(val restaurants: List<Restaurant>) : Result()
+        data class Failure(val throwable: Throwable) : Result()
+    }
+
+    fun execute(lat: Double, lng: Double, offset: Int, limit: Int): Observable<Result> {
+        return repository.getRestaurantList(lat, lng, offset, limit)
+            .toObservable()
+            .map {
+                Success(it) as Result
+            }
+            .onErrorReturn {
+                Failure(it)
+            }
+            .startWith(Loading)
+    }
+
+
+}
